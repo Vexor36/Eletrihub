@@ -9,6 +9,8 @@ Como rodar:
 
 import streamlit as st
 import plotly.express as px
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import date
 
 # =============================================================================
@@ -306,6 +308,142 @@ def renderizar_card_financeiro(emoji: str, titulo: str, valor: float, cor: str) 
 
 
 # =============================================================================
+# PERSISTÊNCIA EM NUVEM (GOOGLE SHEETS) — MÓDULO 4
+# =============================================================================
+# O plano gratuito do Streamlit Cloud "hiberna" o app por inatividade e reinicia
+# tudo do zero, apagando o que estiver só em st.session_state. Para as transações
+# e as regras de divisão sobreviverem a isso, elas são lidas/gravadas numa planilha
+# do Google. Se as credenciais não estiverem configuradas em st.secrets (ex: rodando
+# local sem configurar nada), o app funciona normalmente, só que sem persistência.
+
+NOME_PLANILHA_GOOGLE = "EletriHub_Financeiro"
+ABA_TRANSACOES = "transacoes"
+ABA_CONFIG = "config"
+
+COLUNAS_TRANSACOES_SHEET = [
+    "data", "descricao", "tipo", "categoria", "profissional",
+    "valor_bruto", "km_rodados", "custo_veiculo", "retido_caixa",
+    "lucro_puro_victor", "lucro_puro_gabriel",
+]
+COLUNAS_CONFIG_SHEET = ["valor_por_km", "ambos_caixa", "solo_caixa", "solo_parceiro"]
+
+
+@st.cache_resource(show_spinner=False)
+def _conectar_planilha():
+    """
+    Autentica no Google Sheets usando a conta de serviço configurada em
+    st.secrets["gcp_service_account"]. Retorna None se não houver credenciais
+    (modo local sem persistência) ou se a conexão falhar por qualquer motivo.
+    """
+    try:
+        if "gcp_service_account" not in st.secrets:
+            return None
+        escopos = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credenciais = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=escopos
+        )
+        cliente = gspread.authorize(credenciais)
+        return cliente.open(NOME_PLANILHA_GOOGLE)
+    except Exception:
+        # Cobre tanto a ausência total de um secrets.toml quanto falhas de
+        # autenticação/conexão — em qualquer caso, cai no modo local sem nuvem.
+        return None
+
+
+def nuvem_disponivel() -> bool:
+    """Indica se a persistência em nuvem está configurada e acessível."""
+    return _conectar_planilha() is not None
+
+
+def carregar_transacoes_da_nuvem():
+    """Lê todas as transações da planilha. Retorna None se a nuvem não estiver disponível."""
+    planilha = _conectar_planilha()
+    if planilha is None:
+        return None
+    try:
+        aba = planilha.worksheet(ABA_TRANSACOES)
+        registros = aba.get_all_records()
+        transacoes = []
+        for r in registros:
+            transacoes.append(
+                {
+                    "data": str(r["data"]),
+                    "descricao": str(r["descricao"]),
+                    "tipo": str(r["tipo"]),
+                    "categoria": str(r["categoria"]),
+                    "profissional": str(r["profissional"]),
+                    "valor_bruto": float(r["valor_bruto"] or 0),
+                    "km_rodados": float(r["km_rodados"] or 0),
+                    "custo_veiculo": float(r["custo_veiculo"] or 0),
+                    "retido_caixa": float(r["retido_caixa"] or 0),
+                    "lucro_puro_victor": float(r["lucro_puro_victor"] or 0),
+                    "lucro_puro_gabriel": float(r["lucro_puro_gabriel"] or 0),
+                }
+            )
+        return transacoes
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível carregar as transações da nuvem: {e}")
+        return None
+
+
+def salvar_transacoes_na_nuvem(transacoes: list) -> bool:
+    """Regrava a aba de transações por completo com a lista atual. Retorna True se salvou com sucesso."""
+    planilha = _conectar_planilha()
+    if planilha is None:
+        return False
+    try:
+        aba = planilha.worksheet(ABA_TRANSACOES)
+        aba.clear()
+        linhas = [COLUNAS_TRANSACOES_SHEET] + [
+            [t[coluna] for coluna in COLUNAS_TRANSACOES_SHEET] for t in transacoes
+        ]
+        aba.update(linhas)
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível salvar as transações na nuvem: {e}")
+        return False
+
+
+def carregar_config_da_nuvem():
+    """Lê as regras de divisão da planilha. Retorna None se a nuvem não estiver disponível ou vazia."""
+    planilha = _conectar_planilha()
+    if planilha is None:
+        return None
+    try:
+        aba = planilha.worksheet(ABA_CONFIG)
+        registros = aba.get_all_records()
+        if not registros:
+            return None
+        linha = registros[0]
+        return {
+            "valor_por_km": float(linha["valor_por_km"]),
+            "ambos_caixa": float(linha["ambos_caixa"]),
+            "solo_caixa": float(linha["solo_caixa"]),
+            "solo_parceiro": float(linha["solo_parceiro"]),
+        }
+    except Exception:
+        return None
+
+
+def salvar_config_na_nuvem(regras: dict) -> bool:
+    """Regrava a aba de configuração com as regras atuais. Retorna True se salvou com sucesso."""
+    planilha = _conectar_planilha()
+    if planilha is None:
+        return False
+    try:
+        aba = planilha.worksheet(ABA_CONFIG)
+        aba.clear()
+        aba.update([COLUNAS_CONFIG_SHEET, [regras[c] for c in COLUNAS_CONFIG_SHEET]])
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível salvar a configuração na nuvem: {e}")
+        return False
+
+
+# =============================================================================
 # CABEÇALHO
 # =============================================================================
 st.markdown('<p class="main-header">⚡ EletriHub</p>', unsafe_allow_html=True)
@@ -322,13 +460,15 @@ if "ultima_corrente" not in st.session_state:
 if "ultima_secao" not in st.session_state:
     st.session_state.ultima_secao = 2.5
 if "transacoes" not in st.session_state:
-    st.session_state.transacoes = []
+    transacoes_nuvem = carregar_transacoes_da_nuvem()
+    st.session_state.transacoes = transacoes_nuvem if transacoes_nuvem is not None else []
 if "eletroduto_circuitos" not in st.session_state:
     st.session_state.eletroduto_circuitos = []
 if "confirmando_limpeza_financeira" not in st.session_state:
     st.session_state.confirmando_limpeza_financeira = False
 if "finance_rules" not in st.session_state:
-    st.session_state.finance_rules = {
+    config_nuvem = carregar_config_da_nuvem()
+    st.session_state.finance_rules = config_nuvem if config_nuvem is not None else {
         "valor_por_km": 1.20,
         "ambos_caixa": 15.0,
         "solo_caixa": 10.0,
@@ -627,6 +767,14 @@ with aba4:
     # SUB-ABA: CONFIGURAR DIVISÃO
     # -------------------------------------------------------------------
     with sub_config:
+        if nuvem_disponivel():
+            st.caption("☁️ Persistência em nuvem ativa — os dados sobrevivem a reinícios do app.")
+        else:
+            st.caption(
+                "💻 Modo local (sem nuvem configurada) — os dados são perdidos se o app reiniciar. "
+                "Configure a integração com Google Sheets para persistência real."
+            )
+
         st.markdown("##### Reembolso de Veículo (KM Rodado)")
         st.caption(
             "O veículo pertence ao Gabriel — este valor é pago a ele integralmente, "
@@ -694,6 +842,15 @@ with aba4:
                     st.caption(f"Restante para quem executou sozinho: **{restante_solo:.1f}%**.")
 
         st.session_state.finance_rules = regras
+
+        if st.button("💾 Salvar Configurações na Nuvem", use_container_width=True):
+            if salvar_config_na_nuvem(regras):
+                st.success("✅ Configurações salvas na nuvem com sucesso!")
+            else:
+                st.warning(
+                    "⚠️ Não foi possível salvar na nuvem (integração não configurada ou indisponível). "
+                    "As regras continuam valendo normalmente nesta sessão."
+                )
 
         st.divider()
         st.markdown("##### Como funciona a divisão (Modelo Híbrido Visual)")
@@ -804,6 +961,7 @@ with aba4:
                                 **divisao,
                             }
                         )
+                        salvar_transacoes_na_nuvem(st.session_state.transacoes)
                         st.success("✅ Transação registrada com sucesso!")
                         if tipo == "Receita":
                             total_gabriel = divisao["lucro_puro_gabriel"] + divisao["custo_veiculo"]
@@ -819,6 +977,26 @@ with aba4:
     # SUB-ABA: PAINEL & GRÁFICOS
     # -------------------------------------------------------------------
     with sub_painel:
+        col_status_nuvem, col_botao_sync = st.columns([3, 1])
+        with col_status_nuvem:
+            if nuvem_disponivel():
+                st.caption("☁️ Persistência em nuvem ativa.")
+            else:
+                st.caption("💻 Modo local (sem nuvem configurada).")
+        with col_botao_sync:
+            if st.button("🔄 Sincronizar", use_container_width=True):
+                dados_nuvem_atualizados = carregar_transacoes_da_nuvem()
+                config_nuvem_atualizada = carregar_config_da_nuvem()
+                if dados_nuvem_atualizados is not None:
+                    st.session_state.transacoes = dados_nuvem_atualizados
+                if config_nuvem_atualizada is not None:
+                    st.session_state.finance_rules = config_nuvem_atualizada
+                if dados_nuvem_atualizados is not None or config_nuvem_atualizada is not None:
+                    st.success("✅ Dados atualizados a partir da nuvem!")
+                else:
+                    st.warning("⚠️ Nuvem não disponível — nada para sincronizar.")
+                st.rerun()
+
         transacoes = st.session_state.transacoes
 
         faturamento_bruto = sum(t["valor_bruto"] for t in transacoes if t["tipo"] == "Receita")
@@ -915,6 +1093,7 @@ with aba4:
 
                 if st.button("Excluir Transação Selecionada", use_container_width=True):
                     st.session_state.transacoes.pop(indice_selecionado)
+                    salvar_transacoes_na_nuvem(st.session_state.transacoes)
                     st.success("✅ Transação removida com sucesso!")
                     st.rerun()
 
@@ -949,6 +1128,7 @@ with aba4:
                                     use_container_width=True,
                                 ):
                                     st.session_state.transacoes = []
+                                    salvar_transacoes_na_nuvem(st.session_state.transacoes)
                                     st.session_state.confirmando_limpeza_financeira = False
                                     st.success("✅ Histórico apagado com sucesso.")
                                     st.rerun()
