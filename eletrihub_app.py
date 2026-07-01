@@ -385,7 +385,11 @@ def carregar_transacoes_da_nuvem():
         return None
     try:
         aba = planilha.worksheet(ABA_TRANSACOES)
-        registros = aba.get_all_records()
+        # value_render_option="UNFORMATTED_VALUE" evita que o gspread tente
+        # reinterpretar o texto formatado da célula (ex.: em planilhas com
+        # local pt-BR, "112,3" seria lido como o inteiro 1123, cortando a
+        # casa decimal) — assim lemos sempre o número bruto, sem ambiguidade.
+        registros = aba.get_all_records(value_render_option="UNFORMATTED_VALUE")
         transacoes = []
         for r in registros:
             transacoes.append(
@@ -434,7 +438,11 @@ def carregar_config_da_nuvem():
         return None
     try:
         aba = planilha.worksheet(ABA_CONFIG)
-        registros = aba.get_all_records()
+        # value_render_option="UNFORMATTED_VALUE" evita que o gspread tente
+        # reinterpretar o texto formatado da célula (ex.: em planilhas com
+        # local pt-BR, "112,3" seria lido como o inteiro 1123, cortando a
+        # casa decimal) — assim lemos sempre o número bruto, sem ambiguidade.
+        registros = aba.get_all_records(value_render_option="UNFORMATTED_VALUE")
         if not registros:
             return None
         linha = registros[0]
