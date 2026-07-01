@@ -977,6 +977,13 @@ with aba4:
     # SUB-ABA: PAINEL & GRÁFICOS
     # -------------------------------------------------------------------
     with sub_painel:
+        # Exibe (uma única vez) o resultado da última sincronização manual, se houver.
+        # Precisa ficar guardado no session_state porque o st.rerun() logo abaixo
+        # reinicia o script antes que uma mensagem criada na mesma rodada apareça na tela.
+        if "msg_sincronizacao" in st.session_state:
+            tipo_msg, texto_msg = st.session_state.pop("msg_sincronizacao")
+            getattr(st, tipo_msg)(texto_msg)
+
         col_status_nuvem, col_botao_sync = st.columns([3, 1])
         with col_status_nuvem:
             if nuvem_disponivel():
@@ -992,9 +999,9 @@ with aba4:
                 if config_nuvem_atualizada is not None:
                     st.session_state.finance_rules = config_nuvem_atualizada
                 if dados_nuvem_atualizados is not None or config_nuvem_atualizada is not None:
-                    st.success("✅ Dados atualizados a partir da nuvem!")
+                    st.session_state.msg_sincronizacao = ("success", "✅ Dados atualizados a partir da nuvem!")
                 else:
-                    st.warning("⚠️ Nuvem não disponível — nada para sincronizar.")
+                    st.session_state.msg_sincronizacao = ("warning", "⚠️ Nuvem não disponível — nada para sincronizar.")
                 st.rerun()
 
         transacoes = st.session_state.transacoes
