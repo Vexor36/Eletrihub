@@ -328,15 +328,24 @@ COLUNAS_TRANSACOES_SHEET = [
 COLUNAS_CONFIG_SHEET = ["valor_por_km", "ambos_caixa", "solo_caixa", "solo_parceiro"]
 
 
-@st.cache_resource(show_spinner=False)
+_ULTIMO_ERRO_NUVEM = None  # Diagnóstico: guarda o motivo da última falha de conexão, se houver.
+
+
+@st.cache_resource(show_spinner=False, ttl=60)
 def _conectar_planilha():
     """
     Autentica no Google Sheets usando a conta de serviço configurada em
     st.secrets["gcp_service_account"]. Retorna None se não houver credenciais
     (modo local sem persistência) ou se a conexão falhar por qualquer motivo.
+
+    O cache expira a cada 60s (em vez de para sempre) para que, se você corrigir
+    as credenciais/planilha, o app volte a conectar sozinho pouco depois —
+    sem precisar de um "Reboot app" manual no Streamlit Cloud.
     """
+    global _ULTIMO_ERRO_NUVEM
     try:
         if "gcp_service_account" not in st.secrets:
+            _ULTIMO_ERRO_NUVEM = "Nenhuma credencial encontrada em st.secrets['gcp_service_account']."
             return None
         escopos = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -346,16 +355,24 @@ def _conectar_planilha():
             st.secrets["gcp_service_account"], scopes=escopos
         )
         cliente = gspread.authorize(credenciais)
-        return cliente.open(NOME_PLANILHA_GOOGLE)
-    except Exception:
+        planilha = cliente.open(NOME_PLANILHA_GOOGLE)
+        _ULTIMO_ERRO_NUVEM = None
+        return planilha
+    except Exception as e:
         # Cobre tanto a ausência total de um secrets.toml quanto falhas de
         # autenticação/conexão — em qualquer caso, cai no modo local sem nuvem.
+        _ULTIMO_ERRO_NUVEM = f"{type(e).__name__}: {e}"
         return None
 
 
 def nuvem_disponivel() -> bool:
     """Indica se a persistência em nuvem está configurada e acessível."""
     return _conectar_planilha() is not None
+
+
+def obter_ultimo_erro_nuvem():
+    """Retorna a mensagem de erro da última tentativa de conexão com a nuvem (ou None se OK)."""
+    return _ULTIMO_ERRO_NUVEM
 
 
 def carregar_transacoes_da_nuvem():
@@ -767,13 +784,27 @@ with aba4:
     # SUB-ABA: CONFIGURAR DIVISÃO
     # -------------------------------------------------------------------
     with sub_config:
-        if nuvem_disponivel():
+        conectado_agora = nuvem_disponivel()
+        if conectado_agora:
             st.caption("☁️ Persistência em nuvem ativa — os dados sobrevivem a reinícios do app.")
         else:
             st.caption(
                 "💻 Modo local (sem nuvem configurada) — os dados são perdidos se o app reiniciar. "
                 "Configure a integração com Google Sheets para persistência real."
             )
+
+        with st.expander("🔍 Diagnóstico da conexão com a nuvem"):
+            if conectado_agora:
+                st.success(f"Conectado com sucesso à planilha **{NOME_PLANILHA_GOOGLE}**.")
+            else:
+                st.error("Não foi possível conectar à planilha.")
+                st.code(obter_ultimo_erro_nuvem() or "Nenhum detalhe de erro disponível.")
+                st.caption(
+                    "Erros comuns: nome da planilha diferente de "
+                    f"'{NOME_PLANILHA_GOOGLE}', planilha não compartilhada com o e-mail da "
+                    "conta de serviço (como Editor), APIs do Google Sheets/Drive não ativadas, "
+                    "ou o TOML colado em Secrets com formatação inválida."
+                )
 
         st.markdown("##### Reembolso de Veículo (KM Rodado)")
         st.caption(
