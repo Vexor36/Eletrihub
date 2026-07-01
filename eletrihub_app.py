@@ -328,25 +328,24 @@ COLUNAS_TRANSACOES_SHEET = [
 COLUNAS_CONFIG_SHEET = ["valor_por_km", "ambos_caixa", "solo_caixa", "solo_parceiro"]
 
 
-_ULTIMO_ERRO_NUVEM = None  # Diagnóstico: guarda o motivo da última falha de conexão, se houver.
-
-
 @st.cache_resource(show_spinner=False, ttl=60)
-def _conectar_planilha():
+def _conectar_planilha_com_diagnostico():
     """
     Autentica no Google Sheets usando a conta de serviço configurada em
-    st.secrets["gcp_service_account"]. Retorna None se não houver credenciais
-    (modo local sem persistência) ou se a conexão falhar por qualquer motivo.
+    st.secrets["gcp_service_account"]. Retorna uma tupla (planilha, erro):
+      - Sucesso: (objeto Spreadsheet, None)
+      - Sem credenciais ou falha de conexão: (None, "mensagem explicando o motivo")
 
-    O cache expira a cada 60s (em vez de para sempre) para que, se você corrigir
-    as credenciais/planilha, o app volte a conectar sozinho pouco depois —
-    sem precisar de um "Reboot app" manual no Streamlit Cloud.
+    O resultado (incluindo a mensagem de erro) fica em cache por 60s. Isso é
+    importante: como o Streamlit reexecuta o script inteiro a cada interação,
+    uma variável comum seria resetada a cada rerun — por isso o erro precisa
+    viajar junto dentro do próprio valor cacheado, e não numa variável solta.
+    O TTL de 60s também garante que, se você corrigir as credenciais/planilha,
+    o app tenta reconectar sozinho pouco depois, sem precisar de "Reboot app".
     """
-    global _ULTIMO_ERRO_NUVEM
     try:
         if "gcp_service_account" not in st.secrets:
-            _ULTIMO_ERRO_NUVEM = "Nenhuma credencial encontrada em st.secrets['gcp_service_account']."
-            return None
+            return None, "Nenhuma credencial encontrada em st.secrets['gcp_service_account']."
         escopos = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
@@ -356,13 +355,16 @@ def _conectar_planilha():
         )
         cliente = gspread.authorize(credenciais)
         planilha = cliente.open(NOME_PLANILHA_GOOGLE)
-        _ULTIMO_ERRO_NUVEM = None
-        return planilha
+        return planilha, None
     except Exception as e:
         # Cobre tanto a ausência total de um secrets.toml quanto falhas de
         # autenticação/conexão — em qualquer caso, cai no modo local sem nuvem.
-        _ULTIMO_ERRO_NUVEM = f"{type(e).__name__}: {e}"
-        return None
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _conectar_planilha():
+    planilha, _ = _conectar_planilha_com_diagnostico()
+    return planilha
 
 
 def nuvem_disponivel() -> bool:
@@ -372,7 +374,8 @@ def nuvem_disponivel() -> bool:
 
 def obter_ultimo_erro_nuvem():
     """Retorna a mensagem de erro da última tentativa de conexão com a nuvem (ou None se OK)."""
-    return _ULTIMO_ERRO_NUVEM
+    _, erro = _conectar_planilha_com_diagnostico()
+    return erro
 
 
 def carregar_transacoes_da_nuvem():
